@@ -363,10 +363,9 @@ class OpenAILLM(BaseLLM):
             return [{"role": "user", "content": prompt}]
         
         import base64
-        # Build the multimodal content list
+        # Build the multimodal content list (standard OpenAI API format)
         content_list = []
         valid_file_names = []
-        input_images = []
         for path in image_paths:
             if not os.path.exists(path):
                 raise FileNotFoundError(f"Image not found at path: {path}")
@@ -378,18 +377,20 @@ class OpenAILLM(BaseLLM):
             try:
                 # Base64-encode bytes
                 base64_image = base64.b64encode(image_bytes).decode("utf-8")
-                # Images are presented as a list of dicts:
-                input_images.append({
-                    "type": "input_image",
-                    "image_url": f"data:image/jpeg;base64,{base64_image}"})
+                # Standard OpenAI API format for images
+                content_list.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{base64_image}"
+                    }
+                })
                 valid_file_names.append(os.path.basename(path))
             except Exception as e:
                 print(f"[SKIPPED] Could not base64 encode image {path}: {e}")
         final_prompt = self._build_image_prompt(prompt, valid_file_names, searchfacts.attached_image_path)
         # print(final_prompt)
-        content_list.append({"type": "input_text", "text": final_prompt})
-        # Add all the valid image parts
-        content_list.extend(input_images)
+        # Add text content first, then images (standard OpenAI API format)
+        content_list.insert(0, {"type": "text", "text": final_prompt})
         # Return the final messages list
         return [{"role": "user", "content": content_list}]
 
@@ -999,7 +1000,7 @@ class App:
     def stream_llm_response(self, prompt: str, searchfacts: SearchFacts, target_column: ft.Column = None):
         """Handles the UI updates for a streaming LLM response, and adds the output to target_column."""
         if not self.llm_vision:
-            searchfacts.image_paths = None
+            searchfacts.image_paths = []
         # Make a markdown box for the AI
         ai_response_text = ft.Markdown(
             value="▌",  # This creates a cool cursor effect, and will move as the AI streams.
