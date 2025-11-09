@@ -121,10 +121,20 @@ class BaseLLM:
 
 class LMStudioLLM(BaseLLM):
     # LM STUDIO's great library makes this almost a cakewalk.
-    def __init__(self, model_name):
-        import lmstudio as lms
-        self.model = lms.llm(model_name)
-        self.model_name = model_name
+    def __init__(self, model_name, base_url=None):
+        # If custom base_url is provided, use requests library (LM Studio has OpenAI-compatible API)
+        if base_url:
+            import requests
+            self.use_requests_client = True
+            self.base_url = base_url
+            self.model_name = model_name
+            self.model = None  # We'll use requests instead
+            self.requests = requests
+        else:
+            import lmstudio as lms
+            self.use_requests_client = False
+            self.model = lms.llm(model_name)
+            self.model_name = model_name
 
     def prepare_chat(self, prompt: str, searchfacts: SearchFacts):
         """Helper to create a Chat object if an image is provided, otherwise returns the prompt string."""
@@ -143,6 +153,11 @@ class LMStudioLLM(BaseLLM):
         if not image_paths:
             # print(prompt)
             return prompt, []
+
+        # For requests client, we'll handle images differently in invoke/stream methods
+        if self.use_requests_client:
+            # Just return the prompt and image paths, we'll process them in invoke/stream
+            return {"prompt": prompt, "image_paths": image_paths, "searchfacts": searchfacts}, []
 
         import lmstudio as lms
         import tempfile
@@ -191,25 +206,127 @@ class LMStudioLLM(BaseLLM):
     def invoke(self, prompt, temperature=1, searchfacts: SearchFacts=None):
         chat_input, temp_files = self.prepare_chat(prompt, searchfacts)
         try:
-            response = self.model.respond(chat_input, config={"temperature": temperature})
-            return response.content
+            if self.use_requests_client:
+                # Use requests library for custom base_url
+                if isinstance(chat_input, str):
+                    messages = [{"role": "user", "content": prompt}]
+                elif isinstance(chat_input, dict):
+                    # Handle images with base64 encoding
+                    import base64
+                    content = [{"type": "text", "text": chat_input["prompt"]}]
+                    for img_path in chat_input["image_paths"]:
+                        with open(img_path, "rb") as img_file:
+                            img_data = base64.b64encode(img_file.read()).decode('utf-8')
+                        content.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{img_data}"}
+                        })
+                    messages = [{"role": "user", "content": content}]
+                else:
+                    messages = [{"role": "user", "content": prompt}]
+
+                data = {
+                    "model": self.model_name,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "stream": False
+                }
+                response = self.requests.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    json=data,
+                    headers={"Content-Type": "application/json"},
+                    timeout=120
+                )
+                response.raise_for_status()
+                return response.json()["choices"][0]["message"]["content"]
+            else:
+                response = self.model.respond(chat_input, config={"temperature": temperature})
+                return response.content
         finally:
             # This GUARANTEES cleanup, even if respond() fails
             if temp_files:
                 self._cleanup_temp_files(temp_files)
-    
+
     def stream(self, prompt, temperature=1, searchfacts: SearchFacts=None):
         chat_input, temp_files = self.prepare_chat(prompt, searchfacts)
         try:
-            for fragment in self.model.respond_stream(chat_input, config={"temperature": temperature}):
-                yield fragment.content
+            if self.use_requests_client:
+                # Use requests library with streaming for custom base_url
+                if isinstance(chat_input, str):
+                    messages = [{"role": "user", "content": prompt}]
+                elif isinstance(chat_input, dict):
+                    # Handle images with base64 encoding
+                    import base64
+                    content = [{"type": "text", "text": chat_input["prompt"]}]
+                    for img_path in chat_input["image_paths"]:
+                        with open(img_path, "rb") as img_file:
+                            img_data = base64.b64encode(img_file.read()).decode('utf-8')
+                        content.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{img_data}"}
+                        })
+                    messages = [{"role": "user", "content": content}]
+                else:
+                    messages = [{"role": "user", "content": prompt}]
+
+                data = {
+                    "model": self.model_name,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "stream": True
+                }
+                response = self.requests.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    json=data,
+                    headers={"Content-Type": "application/json"},
+                    stream=True,
+                    timeout=120
+                )
+                response.raise_for_status()
+
+                # Parse SSE (Server-Sent Events) stream
+                import json
+                for line in response.iter_lines():
+                    if line:
+                        line_str = line.decode('utf-8')
+                        if line_str.startswith('data: '):
+                            data_str = line_str[6:]  # Remove 'data: ' prefix
+                            if data_str.strip() == '[DONE]':
+                                break
+                            try:
+                                chunk_data = json.loads(data_str)
+                                if 'choices' in chunk_data and len(chunk_data['choices']) > 0:
+                                    delta = chunk_data['choices'][0].get('delta', {})
+                                    content = delta.get('content')
+                                    if content:
+                                        yield content
+                            except json.JSONDecodeError:
+                                pass  # Skip malformed JSON
+            else:
+                for fragment in self.model.respond_stream(chat_input, config={"temperature": temperature}):
+                    yield fragment.content
         finally:
             # This GUARANTEES cleanup, even if the stream is broken
             if temp_files:
                 self._cleanup_temp_files(temp_files)
 
     def unload(self):
-        self.model.unload()
+        if not self.use_requests_client:
+            self.model.unload()
+
+    def get_info(self):
+        """Return model info, including vision capability"""
+        if self.use_requests_client:
+            # For requests client, we need to check model capabilities differently
+            # Most vision models have "vision" or "gpt-4" in their name
+            class ModelInfo:
+                def __init__(self, vision=False):
+                    self.vision = vision
+            # Try to detect vision capability from model name
+            has_vision = any(keyword in self.model_name.lower() for keyword in ['vision', 'gpt-4', 'gemma', 'llava', 'minicpm'])
+            return ModelInfo(vision=has_vision)
+        else:
+            return self.model.get_info()
 
 class OpenAILLM(BaseLLM):
     def __init__(self, model_name, api_key):
@@ -485,8 +602,8 @@ class App:
             # Fill the LLM BACKEND VARIABLE based on the user's backend preferences in config
             # LM STUDIO!
             if self.config.get("llm_backend") == "LM Studio":
-                self.llm = LMStudioLLM(model_name=self.config['lms_model_name'])
-                self.llm_vision = self.llm.model.get_info().vision
+                self.llm = LMStudioLLM(model_name=self.config['lms_model_name'], base_url=self.config.get('lms_base_url'))
+                self.llm_vision = self.llm.get_info().vision
                 if self.llm_vision:
                     self.log(f"Model has vision support.")
                 else:
@@ -612,7 +729,12 @@ class App:
         # Filter out bad results with LLM, image by image
         if searchfacts.image_search_results and self.config['ai_mode'] and self.llm_vision and self.config['llm_filter_results']:
             searchfacts.current_state = "evaluate_image_relevance"
-            searchfacts.image_search_results = [r for r in searchfacts.image_search_results if self.llm_evaluate_image_relevance(r['file_path'], searchfacts)]
+            # Only filter if not using requests client (to avoid compatibility issues)
+            if not (hasattr(self.llm, 'use_requests_client') and self.llm.use_requests_client):
+                searchfacts.image_search_results = [r for r in searchfacts.image_search_results if self.llm_evaluate_image_relevance(r['file_path'], searchfacts)]
+            else:
+                # Skip image filtering when using requests client to avoid compatibility issues
+                pass
         # Initialize paths
         searchfacts.image_paths = []
         # Display results
@@ -650,7 +772,12 @@ class App:
         # Filter out bad results with LLM, chunk by chunk
         if searchfacts.text_search_results and self.config['ai_mode'] and self.config['llm_filter_results']:
             searchfacts.current_state = "evaluate_text_relevance"
-            searchfacts.text_search_results = [r for r in searchfacts.text_search_results if self.llm_evaluate_text_relevance(r['documents'], searchfacts)]
+            # Only filter if not using requests client (to avoid compatibility issues)
+            if not (hasattr(self.llm, 'use_requests_client') and self.llm.use_requests_client):
+                searchfacts.text_search_results = [r for r in searchfacts.text_search_results if self.llm_evaluate_text_relevance(r['documents'], searchfacts)]
+            else:
+                # Skip text filtering when using requests client to avoid compatibility issues
+                pass
         # Display results
         if searchfacts.text_search_results:
             results_table = self.results_table(searchfacts.text_search_results)
