@@ -1,5 +1,8 @@
-# Second Brain  
+# Second Brain
 # *Local RAG Agent* <mark>by Henry Daum</mark>
+
+> **🔱 This is a fork** of [henrydaum/second-brain](https://github.com/henrydaum/second-brain)
+> Maintained by [SabaGPT](https://github.com/SabaGPT) with additional features and improvements.
 
 **If you find any errors, please let me know.**
 
@@ -34,6 +37,22 @@ https://github.com/user-attachments/assets/38dd0998-328a-4164-8b5e-9ec1a52dcb84
 - Security and privacy: local search ensures no data is sent to the internet.
 - Works with Google Drive.
 - Open source: all the code is right here.
+
+---
+
+## What's New in This Fork
+
+### Custom LM Studio Base URL Support
+- **Flexible LM Studio Configuration**: Added `lms_base_url` parameter to connect to LM Studio servers running on custom ports or remote machines
+- **OpenAI-Compatible API Support**: Implements OpenAI-compatible API endpoints using the requests library for better compatibility
+- **Enhanced Image Handling**: Supports base64-encoded images for vision models when using custom base URLs
+- **Automatic Capability Detection**: New `get_info()` method automatically detects model vision capabilities
+- **Improved Compatibility**: Smart fallback mechanisms to avoid compatibility issues with different API implementations
+
+### Other Improvements
+- Added comprehensive `.gitignore` for cleaner repository management
+- Better error handling for custom API endpoints
+- Streamlined configuration for both local and remote LM Studio instances
 
 ---
 
@@ -143,6 +162,7 @@ config.json
 | llm_filter_results | Filtering results is somewhat slow. This gives the option to turn that part of ai_mode on/off. | true or false | false |
 | llm\_backend | Choose which AI backend to use. OpenAI is slower and not local but has smarter models. | “LM Studio” or "OpenAI" | "LM Studio" |
 | lms\_model\_name | Can be any language model from LM Studio, but it must be already downloaded. Vision is preferred. | Any valid name | "unsloth/gemma-3-4b-it" |
+| lms\_base\_url | (Optional) Custom base URL for LM Studio server. Useful for connecting to LM Studio on different ports or remote machines. Uses OpenAI-compatible API endpoints. Leave empty to use the default lmstudio library. | Any valid URL or empty | "http://localhost:1234" |
 | openai_model_name | Can be any OpenAI text model. (Some OpenAI models, like gpt-5, require additional verification to use.) | Any OpenAI model | "gpt-5-mini" |
 | openai_api_key | When using OpenAI as a backend, an API key from [platform.openai.com](https://platform.openai.com/) is required. Using it costs money, so the account must have enough funds. If this field is left blank (""), the OpenAI client will look for an *environmental variable* called OPENAI_API_KEY, and use that. Otherwise, the client will use the string found here. | Any API key | "" |
 | max\_results | Sets the maximum for both text and image results. | 1-30 | 6 |
